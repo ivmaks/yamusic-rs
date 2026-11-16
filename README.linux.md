@@ -73,8 +73,8 @@ yamusic-rs --tray       # алиас --hidden (совместимость с Win
 | Что | Как |
 |---|---|
 | Виджет медиа | GNOME Shell → быстрые настройки → блок «Яндекс Музыка RS» |
-| Медиа-клавиши | Play/Pause, Next, Previous работают на активный плеер |
-| Методы | `PlayPause`, `Play`, `Pause`, `Next`, `Previous`, `Seek`, `SetPosition` |
+| Медиа-клавиши | Play/Pause, Next, Previous работают на активный плеер. GNOME (`gsd-media-keys`) шлёт именно `Pause`/`Play`, а не `PlayPause` — оба метода поддержаны |
+| Методы | `PlayPause`, `Play`, `Pause`, `Stop` (у нас = пауза), `Next`, `Previous`, `Seek`, `SetPosition` |
 | Свойства | `PlaybackStatus`, `Metadata` (название, исполнитель, альбом, длина, `artUrl`), `Volume`, `LoopStatus`, `Shuffle`, `Position` |
 | `Raise` / `Quit` | показать окно / завершить приложение |
 
@@ -196,7 +196,10 @@ flowchart LR
   управление. Под X11 окно встаёт в правый нижний угол монитора; под Wayland позицию окна задаёт
   композитор (`wl_surface` не умеет «встать в угол»), поэтому плашка появится там, где решит GNOME.
 - **Медиаклавиши.** На Linux работают через MPRIS (GNOME сам рассылает их активному плееру);
-  отдельной регистрации горячих клавиш, как в Windows-трее, здесь нет.
+  отдельной регистрации горячих клавиш, как в Windows-трее, здесь нет. Если клавиша не реагирует,
+  посмотрите, что уходит на шину: `dbus-monitor --session "type='method_call',interface='org.mpris.MediaPlayer2.Player'"`
+  — GNOME должен слать `Pause`/`Play`/`PlayPause` вашему плееру; какие клавиши заняты, видно в
+  «Настройки → Клавиатура → Сочетания клавиш».
 
 ## Wayland и масштаб
 

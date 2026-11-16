@@ -119,6 +119,7 @@ async fn server_task(player: Player, rx: mpsc::Receiver<Snapshot>) -> Result<(),
     // отправка в std-канал из async-контекста безопасна (неблокирующая). На каждый
     // обработчик — свой клон: замыкания забирают владение.
     let p_pause = player.clone();
+    let p_pause2 = player.clone();
     let p_play = player.clone();
     let p_next = player.clone();
     let p_prev = player.clone();
@@ -130,6 +131,13 @@ async fn server_task(player: Player, rx: mpsc::Receiver<Snapshot>) -> Result<(),
     let p_shuffle = player.clone();
     p.connect_play_pause(move |_| p_pause.send(Cmd::PlayPause));
     p.connect_play(move |_| p_play.send(Cmd::Resume));
+    // Отдельный `Pause` нужен не для красоты: клавиши медиа на клавиатуре GNOME шлёт именно
+    // `Pause`, а не `PlayPause` (видно по dbus-monitor: gsd-media-keys → Pause). Без этого
+    // обработчика клавиша «плей/пауза» ничего не делала, хотя кнопки в уведомлении работали.
+    p.connect_pause(move |_| p_pause2.send(Cmd::Pause));
+    // «Стоп» в MPRIS — остановка воспроизведения; ближайшее по смыслу у нас — пауза.
+    let p_stop = player.clone();
+    p.connect_stop(move |_| p_stop.send(Cmd::Pause));
     p.connect_next(move |_| p_next.send(Cmd::Next));
     p.connect_previous(move |_| p_prev.send(Cmd::Prev));
     p.connect_seek(move |_, t| p_seek.send(Cmd::Seek(t.as_micros() as f32 / 1_000_000.0)));

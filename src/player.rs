@@ -90,6 +90,8 @@ pub enum Cmd {
     PlayPause,
     /// Снять с паузы (если уже играет — ничего не делать).
     Resume,
+    /// Поставить на паузу (если уже на паузе — ничего не делать).
+    Pause,
     Next,
     Prev,
     Seek(f32),
@@ -570,6 +572,12 @@ impl Engine {
                 self.paused = false;
                 if let Some(s) = self.sink() {
                     s.play();
+                }
+            }
+            Cmd::Pause => {
+                self.paused = true;
+                if let Some(s) = self.sink() {
+                    s.pause();
                 }
             }
             Cmd::PlayPause => {
