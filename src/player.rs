@@ -776,10 +776,11 @@ impl Engine {
         // Сервер иногда возвращает недавно сыгранные треки — их пропускаем. Если весь пакет
         // из повторов, просим ещё (до двух раз подряд), а потом берём как есть, чтобы не замолчать.
         let check_history = !replace || self.source == Source::Wave;
+        let skip = |t: &Track| queued(t) || (check_history && self.history.iter().any(|h| h.id == t.id));
         let fresh: Vec<Track> = b
             .tracks
             .iter()
-            .filter(|t| !(queued(t) || check_history && self.history.iter().any(|h| h.id == t.id)))
+            .filter(|t| !skip(t))
             .cloned()
             .collect();
         let tracks = if !fresh.is_empty() || b.tracks.iter().all(&queued) {

@@ -445,8 +445,8 @@ impl Ctx {
                 self.player.send(Cmd::Wave(src));
                 self.start();
             }
-            "url" => win::open_url(arg),
-            "concert" => win::open_url(&format!("https://music.yandex.ru/concert/{arg}")),
+            "url" => sys::open_url(arg),
+            "concert" => sys::open_url(&format!("https://music.yandex.ru/concert/{arg}")),
             "album" | "playlist" if play => self.play_target(target, title),
             "artist" if play => {
                 if let Some(net) = self.st.borrow().net.clone() {
@@ -504,7 +504,7 @@ impl Ctx {
                 })
             });
             if let Some(u) = url.filter(|u| !u.is_empty()) {
-                win::open_url(&u);
+                sys::open_url(&u);
             }
             return;
         }

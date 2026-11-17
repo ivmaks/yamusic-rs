@@ -3,7 +3,7 @@
 //! скачивает `yamusic-rs.exe` нового релиза, сверяет SHA-256 с тем, что показывает GitHub,
 //! и подменяет собой запущенный файл: Windows не даёт перезаписать работающий exe, но даёт
 //! его переименовать. Старый файл (`*.old.exe`) удаляется при следующем запуске.
-//! Если папка недоступна для записи, кнопка открывает страницу релиза.
+//! Если папка недоступна для записи, кнопка открывает страницу релиза. На Linux — всегда её.
 
 #[cfg(windows)]
 use sha2::{Digest, Sha256};
@@ -52,7 +52,7 @@ fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
 /// Последний релиз, если он новее запущенной версии.
 pub fn check() -> Result<Option<Release>, String> {
     let api = env!("CARGO_PKG_REPOSITORY").replace("https://github.com/", "https://api.github.com/repos/");
-    let resp = client()?.get(format!("{api}/releases/latest")).send().map_err(|e| e.to_string())?;
+    let resp = client()?.get(format!("{api}/releases/latest")).send().map_err(|e| crate::config::chain(&e))?;
     // 404 — релизов ещё нет.
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
@@ -68,8 +68,7 @@ pub fn check() -> Result<Option<Release>, String> {
     if latest <= current {
         return Ok(None);
     }
-    // Под Linux обновление — установка нового deb: авто-замену не делаем,
-    // кнопка уведомления открывает страницу релиза.
+    // На Linux exe не нужен: новый пакет ставится со страницы релиза.
     #[cfg(windows)]
     let exe = v.get("assets").and_then(|a| a.as_array()).and_then(|assets| {
         let a = assets.iter().find(|a| a.get("name").and_then(|n| n.as_str()) == Some(ASSET))?;
@@ -103,7 +102,7 @@ pub fn install(r: &Release) -> Result<PathBuf, String> {
         .send()
         .and_then(|r| r.error_for_status())
         .and_then(|r| r.bytes())
-        .map_err(|e| format!("загрузка: {e}"))?;
+        .map_err(|e| format!("загрузка: {}", crate::config::chain(&e)))?;
     if bytes.len() as u64 != *size {
         return Err("файл скачался не целиком".into());
     }

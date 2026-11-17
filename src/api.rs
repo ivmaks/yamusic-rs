@@ -555,7 +555,10 @@ fn parse_pin(v: &Value) -> Option<Pin> {
             round: true,
             target: format!("station:{}", str_of(d, "stationId")),
         },
-        _ => return None,
+        other => {
+            crate::config::log(format!("закреп неизвестного типа {other}"));
+            return None;
+        }
     })
 }
 
@@ -831,9 +834,9 @@ impl Api {
     }
 
     fn send_text(&self, rb: RequestBuilder) -> Res<(reqwest::StatusCode, String)> {
-        let resp = rb.send().map_err(|e| format!("сеть: {e}"))?;
+        let resp = rb.send().map_err(|e| format!("сеть: {}", crate::config::chain(&e)))?;
         let status = resp.status();
-        let text = resp.text().map_err(|e| format!("сеть: {e}"))?;
+        let text = resp.text().map_err(|e| format!("сеть: {}", crate::config::chain(&e)))?;
         Ok((status, text))
     }
 
@@ -1511,7 +1514,7 @@ let mp3 = || arr.iter().filter(|x| x.get("codec").and_then(|c| c.as_str()) == So
 
     /// Скачать файл потоком на диск, без чтения целиком в память. Ссылки уже подписаны — без токена.
     pub fn download_to(&self, url: &str, path: &std::path::Path) -> Res<u64> {
-        let mut resp = self.http.get(url).send().map_err(|e| format!("сеть: {e}"))?;
+        let mut resp = self.http.get(url).send().map_err(|e| format!("сеть: {}", crate::config::chain(&e)))?;
         if !resp.status().is_success() {
             return Err(format!("HTTP {}", resp.status()));
         }
@@ -1527,11 +1530,11 @@ let mp3 = || arr.iter().filter(|x| x.get("codec").and_then(|c| c.as_str()) == So
 
     /// Скачать файл целиком (аудио, обложка). Ссылки уже подписаны — без токена.
     pub fn fetch_bytes(&self, url: &str) -> Res<Vec<u8>> {
-        let resp = self.http.get(url).send().map_err(|e| format!("сеть: {e}"))?;
+        let resp = self.http.get(url).send().map_err(|e| format!("сеть: {}", crate::config::chain(&e)))?;
         if !resp.status().is_success() {
             return Err(format!("HTTP {}", resp.status()));
         }
-        resp.bytes().map(|b| b.to_vec()).map_err(|e| format!("сеть: {e}"))
+        resp.bytes().map(|b| b.to_vec()).map_err(|e| format!("сеть: {}", crate::config::chain(&e)))
     }
 }
 

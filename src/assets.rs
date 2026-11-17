@@ -1,7 +1,6 @@
 //! Шрифты и иконки берутся из установленного официального приложения (app.asar).
 //! В репозитории их нет. Если приложение не установлено, те же файлы один раз скачиваются
-//! с веб-версии music.yandex.ru в каталог данных приложения (`config::dir()/assets`,
-//! `%APPDATA%` в Windows и `~/.config` в Linux) и дальше читаются оттуда.
+//! с веб-версии music.yandex.ru в кэш (`config::cache_dir`) и дальше читаются оттуда.
 
 use crate::config::log;
 use std::collections::HashMap;
@@ -15,14 +14,18 @@ pub struct Asar {
     index: serde_json::Value,
 }
 
-pub fn asar_path() -> PathBuf {
+/// Официального клиента под Linux нет, там ассеты только с сайта.
+fn asar_path() -> Option<PathBuf> {
+    if cfg!(not(windows)) {
+        return None;
+    }
     let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
-    PathBuf::from(local).join("Programs").join("YandexMusic").join("resources").join("app.asar")
+    Some(PathBuf::from(local).join("Programs").join("YandexMusic").join("resources").join("app.asar"))
 }
 
 impl Asar {
     pub fn open() -> Option<Asar> {
-        let mut file = File::open(asar_path()).ok()?;
+        let mut file = File::open(asar_path()?).ok()?;
         let mut head = [0u8; 16];
         file.read_exact(&mut head).ok()?;
         let u = |i: usize| u32::from_le_bytes(head[i..i + 4].try_into().unwrap());
@@ -106,7 +109,7 @@ const WEB_ORIGIN: &str = "https://music.yandex.ru";
 
 impl WebCache {
     fn new() -> WebCache {
-        WebCache { dir: crate::config::dir().join("assets"), http: None }
+        WebCache { dir: crate::config::cache_dir().join("assets"), http: None }
     }
 
     fn read(&mut self, path: &str) -> Option<Vec<u8>> {

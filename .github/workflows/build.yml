@@ -1,6 +1,7 @@
-# Каждый push и PR: clippy, тесты и exe в артефактах.
-# Тег v* (например v1.0.1): то же и релиз с yamusic-rs.exe — его ищет встроенная обновлялка.
-# Linux (ветка linux-port): clippy, тесты и deb-пакет в артефактах.
+# Каждый push и PR: clippy, тесты и сборки в артефактах: exe для Windows, .deb, .rpm и
+# AppImage для Linux.
+# Тег v* (например v1.0.1): то же и релиз со всеми файлами. Его создаёт отдельное задание
+# после обеих сборок. Встроенная обновлялка на Windows ищет в релизе yamusic-rs.exe.
 name: Сборка
 
 on:
@@ -13,8 +14,6 @@ on:
 jobs:
   windows:
     runs-on: windows-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v7
 
@@ -35,6 +34,13 @@ jobs:
 
       - run: cargo clippy --release --all-targets -- -D warnings
       - run: cargo test --release
+
+      # Известные уязвимости в дереве зависимостей (RustSec): отчёт в логе джобы.
+      - name: cargo audit
+        run: |
+          cargo install --locked cargo-audit
+          cargo audit
+
       - run: cargo build --release
 
       - name: SHA-256
@@ -47,62 +53,71 @@ jobs:
           path: target/release/yamusic-rs.exe
           archive: false
 
-      - name: Релиз
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" target/release/yamusic-rs.exe --title "Яндекс Музыка RS ${GITHUB_REF_NAME#v}" --generate-notes
-
+  # Ubuntu 22.04 — самая старая glibc (2.35) среди поддерживаемых: собранное здесь
+  # запускается и на ней, и на всех более новых дистрибутивах.
   linux:
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
+
+      - name: Зависимости сборки
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libasound2-dev libfontconfig1-dev libfreetype-dev \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libx11-xcb-dev \
+            libxcursor-dev libxi-dev libxrandr-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
 
-      # System-зависимости slint/winit/rodio: alsa, fontconfig/freetype, xkbcommon/wayland/x11.
-      - name: Зависимости сборки
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config libasound2-dev libfontconfig1-dev libfreetype6-dev \
-            libxkbcommon-dev libwayland-dev libx11-dev libx11-xcb-dev libxkbcommon-x11-dev
-
       - run: cargo clippy --release --all-targets -- -D warnings
       - run: cargo test --release
+      - run: cargo build --release
 
-      # Известные уязвимости в дереве зависимостей (RustSec). Отчёт в логе джобы.
-      - name: cargo audit
+      - name: Пакеты
+        id: pkg
         run: |
-          cargo install --locked cargo-audit
-          cargo audit
-      - run: cargo install --locked cargo-deb
-      - run: cargo deb
+          command -v cargo-deb >/dev/null || cargo install --locked cargo-deb
+          command -v cargo-generate-rpm >/dev/null || cargo install --locked cargo-generate-rpm
+          tools/appimage.sh
+          cargo deb --no-build
+          cargo generate-rpm
+          echo "deb=$(ls target/debian/*.deb)" >> "$GITHUB_OUTPUT"
+          echo "rpm=$(ls target/generate-rpm/*.rpm)" >> "$GITHUB_OUTPUT"
 
+      - name: SHA-256
+        run: sha256sum target/release/yamusic-rs target/appimage/*.AppImage ${{ steps.pkg.outputs.deb }} ${{ steps.pkg.outputs.rpm }}
+
+      # По файлу на артефакт: без zip каждый скачивается как есть.
       - uses: actions/upload-artifact@v7
         with:
-          path: target/debian/*.deb
+          path: target/appimage/yamusic-rs-x86_64.AppImage
+          archive: false
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.pkg.outputs.deb }}
+          archive: false
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.pkg.outputs.rpm }}
           archive: false
 
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Релиз
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          DEB: target/debian/*.deb
-        # Релиз создаёт windows-джоба; ждём его и докидываем deb (до 10 минут).
-        run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" --title "Яндекс Музыка RS ${GITHUB_REF_NAME#v}" --generate-notes \
-            || true
-          for i in $(seq 1 60); do
-            gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 && break
-            sleep 10
-          done
-          gh release upload "$GITHUB_REF_NAME" $DEB --clobber
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "Яндекс Музыка RS ${GITHUB_REF_NAME#v}" --generate-notes

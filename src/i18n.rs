@@ -24,6 +24,11 @@ pub fn set_lang(lang: &str) {
     DICT.with(|d| *d.borrow_mut() = dict);
 }
 
+/// Есть ли откуда взять словари: без официального клиента остаётся только русский.
+pub fn available() -> bool {
+    Asar::open().is_some()
+}
+
 fn load(lang: &str) -> Option<HashMap<String, String>> {
     let mut asar = Asar::open()?;
     let mut ru = None;

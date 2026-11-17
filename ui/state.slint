@@ -384,6 +384,10 @@ export global App {
     in property <string> discord-status;
     // Запуск вместе с Windows (сразу в трее).
     in property <bool> autostart;
+    // На Linux нет трея и словарей официального клиента.
+    in property <bool> linux;
+    // Есть словари для en/uz/kk (из установленного официального клиента).
+    in property <bool> translations: true;
 
     // Вход по коду устройства.
     in property <bool> logged-out;

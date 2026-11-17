@@ -128,7 +128,7 @@ export component ArtistPage inherits Rectangle {
                 property <bool> rel: App.ar-release.length > 0;
                 property <length> tw: rel ? (self.width - 50px) * 0.6 : self.width;
                 height: max(44px + App.ar-popular.length * 56px, rel ? 44px + 204px + 76px : 0px) + 40px;
-                BlockHeader { x: 0; y: 0; text: T.t("Популярные треки"); clicked => { App.artist-play(); } }
+                BlockHeader { x: 0; y: 0; text: T.t("Популярные треки"); clicked => { App.open-card("artist-tracks", 0); } }
                 if rel: Rectangle {
                     x: parent.tw + 50px;
                     y: 0;

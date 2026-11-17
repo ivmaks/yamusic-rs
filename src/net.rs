@@ -1,6 +1,6 @@
 //! Данные страниц: грузятся в фоне по ключу, пока грузятся свежие — показываются старые.
 
-use crate::api::{Album, Api, ArtistFull, Collection, Lyrics, Playlist, Res, Search, SearchLanding, Track};
+use crate::api::{Album, Api, Artist, ArtistFull, Collection, Lyrics, Playlist, Res, Search, SearchLanding, Track};
 use crate::config::log;
 use crate::player::{After, Cmd, ListKind, Player, Source};
 use std::collections::HashMap;
@@ -14,6 +14,8 @@ pub struct ListData {
     pub tracks: Vec<Track>,
     pub playlist: Option<Playlist>,
     pub album: Option<Album>,
+    /// Полный список «Популярных треков» исполнителя.
+    pub artist: Option<Artist>,
 }
 
 pub enum Data {
@@ -98,6 +100,7 @@ fn fetch(api: &Api, uid: &str, key: &str) -> Res<Data> {
                 tracks,
                 playlist: None,
                 album: Some(a),
+                artist: None,
             })
         }),
         "playlist" => {
@@ -110,6 +113,7 @@ fn fetch(api: &Api, uid: &str, key: &str) -> Res<Data> {
                     tracks,
                     playlist: Some(p),
                     album: None,
+                    artist: None,
                 })
             })
         }
@@ -121,8 +125,22 @@ fn fetch(api: &Api, uid: &str, key: &str) -> Res<Data> {
                 tracks,
                 playlist: None,
                 album: None,
+                artist: None,
             })
         }),
+        "artist-tracks" => {
+            let info = api.get_raw(&format!("/artists/{arg}/info"))?;
+            let a = info.get("artist").and_then(crate::api::parse_artist).ok_or("нет данных об исполнителе")?;
+            Ok(Data::List(ListData {
+                kind: ListKind::Artist,
+                title: a.name.clone(),
+                covers: a.cover.iter().cloned().collect(),
+                tracks: api.artist_tracks(arg)?,
+                playlist: None,
+                album: None,
+                artist: Some(a),
+            }))
+        }
         "playlists" => api.playlists(uid).map(Data::Playlists),
         "lyrics" => api.lyrics(arg).map(Data::Lyrics),
         "collection" => api.collection(uid).map(Data::Collection),

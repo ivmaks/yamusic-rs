@@ -75,7 +75,7 @@ fn worker(http: Client, queue: Queue) {
             .send()
             .and_then(|r| r.error_for_status())
             .and_then(|r| r.bytes())
-            .map_err(|e| log(format!("обложка {url}: {e}")))
+            .map_err(|e| log(format!("обложка {url}: {}", crate::config::chain(&e))))
             .ok()
             .and_then(|b| decode(&b, px));
         let _ = slint::invoke_from_event_loop(move || {

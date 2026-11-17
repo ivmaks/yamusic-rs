@@ -5,9 +5,7 @@
 //! всё равно невидим), управление без окна даёт MPRIS (src/mpris.rs). Заглушки ниже
 //! сохраняют прежнее API, чтобы `gui.rs` и `main.rs` не зависели от ОС.
 
-#[cfg(windows)]
-use crate::win::wide;
-#[cfg(windows)]
+use crate::sys::wide;
 use std::cell::RefCell;
 #[cfg(windows)]
 use std::rc::Rc;
@@ -80,7 +78,7 @@ thread_local! {
 
 #[cfg(windows)]
 fn load_icon() -> HICON {
-    crate::win::app_icon(unsafe { GetSystemMetrics(SM_CXSMICON) })
+    crate::sys::app_icon(unsafe { GetSystemMetrics(SM_CXSMICON) })
 }
 
 #[cfg(windows)]

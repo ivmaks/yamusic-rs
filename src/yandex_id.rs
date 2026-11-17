@@ -30,7 +30,7 @@ const ICONS: [(&str, &str); 10] = [
 pub type Svgs = HashMap<String, String>;
 
 fn dir() -> PathBuf {
-    crate::config::dir().join("assets").join("id")
+    crate::config::cache_dir().join("assets").join("id")
 }
 
 fn names() -> impl Iterator<Item = String> {
@@ -50,11 +50,11 @@ pub fn download() -> Result<Svgs, String> {
         .build()
         .map_err(|e| e.to_string())?;
     let get = |url: &str| -> Result<String, String> {
-        let r = http.get(url).send().map_err(|e| format!("{url}: {e}"))?;
+        let r = http.get(url).send().map_err(|e| format!("{url}: {}", crate::config::chain(&e)))?;
         if !r.status().is_success() {
             return Err(format!("{url}: HTTP {}", r.status()));
         }
-        r.text().map_err(|e| format!("{url}: {e}"))
+        r.text().map_err(|e| format!("{url}: {}", crate::config::chain(&e)))
     };
 
     let page = get(PAGE)?;

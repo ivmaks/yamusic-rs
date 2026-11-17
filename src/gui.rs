@@ -10,14 +10,14 @@ use crate::config::{log, Config};
 use crate::images::Images;
 use crate::net::{tracks_word, Data, ListData, Net};
 use crate::player::{After, Cmd, ListKind, Player, Repeat, Source, Status};
-use crate::win;
+use crate::sys;
 use slint::winit_030::{winit, WinitWindowAccessor};
 use slint::{Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer, TimerMode, VecModel};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 struct State {
@@ -100,7 +100,6 @@ struct Ctx {
     player: Player,
     discord: Arc<crate::discord::Discord>,
     /// Состояние для MPRIS (на Windows — заглушка).
-    mpris: crate::mpris::Mpris,
     images: Images,
     tracks: Rc<VecModel<TrackItem>>,
     st: RefCell<State>,
@@ -225,7 +224,7 @@ impl Ctx {
         if let Status::Failed(e) = &s.status {
             // Токен отозван или истёк — обратно на экран входа.
             if self.st.borrow().net.is_none() && e.contains("токен") && !app.get_logged_out() {
-                self.st.borrow_mut().cfg.token = None;
+                self.st.borrow_mut().cfg.forget_token();
                 self.st.borrow().cfg.save();
                 self.login_start();
             } else if app.get_toast().is_empty() && !app.get_logged_out() {
@@ -345,26 +344,31 @@ impl Ctx {
                 with_ctx(|c| {
                     let Some(ui) = weak.upgrade() else { return };
                     let app = ui.global::<App>();
-                    if let Ok((name, avatar)) = about {
-                        app.set_login(name.into());
-                        if let Some(url) = avatar {
-                            let w = weak.clone();
-                            c.images.get(&url, 100, move |img| {
-                                if let Some(ui) = w.upgrade() {
-                                    ui.global::<App>().set_avatar(img.clone());
-                                }
-                            });
+                    match about {
+                        Ok((name, avatar)) => {
+                            app.set_login(name.into());
+                            if let Some(url) = avatar {
+                                let w = weak.clone();
+                                c.images.get(&url, 100, move |img| {
+                                    if let Some(ui) = w.upgrade() {
+                                        ui.global::<App>().set_avatar(img.clone());
+                                    }
+                                });
+                            }
                         }
+                        Err(e) => log(format!("профиль: {e}")),
                     }
                     match pins {
                         Ok(p) => c.set_pins(p),
                         Err(e) => log(format!("pins: {e}")),
                     }
-                    if let Ok(ids) = liked_albums {
-                        c.st.borrow_mut().liked_albums = ids.into_iter().collect();
+                    match liked_albums {
+                        Ok(ids) => c.st.borrow_mut().liked_albums = ids.into_iter().collect(),
+                        Err(e) => log(format!("понравившиеся альбомы: {e}")),
                     }
-                    if let Ok(keys) = liked_playlists {
-                        c.st.borrow_mut().liked_playlists = keys.into_iter().collect();
+                    match liked_playlists {
+                        Ok(keys) => c.st.borrow_mut().liked_playlists = keys.into_iter().collect(),
+                        Err(e) => log(format!("понравившиеся плейлисты: {e}")),
                     }
                     if let Some(on) = less_ai {
                         crate::api::LESS_AI.store(on, std::sync::atomic::Ordering::Relaxed);
@@ -835,6 +839,14 @@ impl Ctx {
                 app.set_list_meta(app.get_login());
                 app.set_list_tint(Color::from_rgb_u8(217, 217, 217));
             }
+            ListKind::Artist => {
+                app.set_list_kind("artist".into());
+                app.set_list_kind_label(crate::i18n::tr("Популярные треки").into());
+                app.set_list_meta(tracks_word(l.tracks.len() as u64).into());
+                if let Some(c) = l.artist.as_ref().and_then(|a| a.color) {
+                    app.set_list_tint(soft(c));
+                }
+            }
             ListKind::Album => {
                 let a = l.album.as_ref();
                 app.set_list_kind("album".into());
@@ -947,9 +959,10 @@ impl Ctx {
     }
 
     fn list_id(l: &ListData) -> String {
-        match (&l.playlist, &l.album) {
-            (Some(p), _) => format!("{}:{}", p.uid, p.kind),
-            (_, Some(a)) => a.id.clone(),
+        match (&l.playlist, &l.album, &l.artist) {
+            (Some(p), _, _) => format!("{}:{}", p.uid, p.kind),
+            (_, Some(a), _) => a.id.clone(),
+            (_, _, Some(a)) => a.id.clone(),
             _ => "likes".into(),
         }
     }
@@ -1004,9 +1017,10 @@ impl Ctx {
             return;
         }
         let start = self.st.borrow().view.get(i).copied().unwrap_or(0);
-        let wave = match (&l.playlist, &l.album) {
-            (Some(p), _) => Source::Seed { station: p.seed(), header: "Моя волна по плейлисту".into(), title: p.title.clone() },
-            (_, Some(a)) => Source::Seed { station: format!("album:{}", a.id), header: "Моя волна по альбому".into(), title: a.title.clone() },
+        let wave = match (&l.playlist, &l.album, &l.artist) {
+            (Some(p), _, _) => Source::Seed { station: p.seed(), header: "Моя волна по плейлисту".into(), title: p.title.clone() },
+            (_, Some(a), _) => Source::Seed { station: format!("album:{}", a.id), header: "Моя волна по альбому".into(), title: a.title.clone() },
+            (_, _, Some(a)) => Source::Seed { station: format!("artist:{}", a.id), header: "Моя волна по исполнителю".into(), title: a.name.clone() },
             _ => Source::Wave,
         };
         self.player.send(Cmd::PlayList {
@@ -1080,7 +1094,7 @@ fn apply_ui_scale(ui: &AppWindow) {
     if phys.width == 0 || phys.height == 0 {
         return;
     }
-    let base = std::env::var("SLINT_SCALE_FACTOR").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or_else(|| dpi_base(ui, w));
+    let base = std::env::var("SLINT_SCALE_FACTOR").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or_else(|| sys::scale(ui.window()));
     let css_w = phys.width as f32 / base;
     let k = if css_w >= 1920.0 { (12.0 + 0.003 * css_w) / 16.0 } else { 1.0 };
     let target = base * k;
@@ -1121,21 +1135,9 @@ const SUPPORT_CHAT: &str =
     "https://yandex.ru/chat?context=%7B%22entrypoint%22%3A%22web_desktop%22%7D#/user/ee219503-b69b-9484-405b-6877a510e13c";
 
 fn quit() {
+    #[cfg(windows)]
     crate::tray::remove();
     let _ = slint::quit_event_loop();
-}
-
-/// Окно для внешних «покажи меня» (wake-сокет второго запуска, MPRIS Raise).
-static WAKE_UI: OnceLock<slint::Weak<AppWindow>> = OnceLock::new();
-
-/// Показать окно из любого потока. Пока окно ещё не создано — просто ничего не делает.
-pub fn wake() -> Result<(), slint::EventLoopError> {
-    let Some(weak) = WAKE_UI.get().cloned() else { return Ok(()) };
-    slint::invoke_from_event_loop(move || {
-        if let Some(ui) = weak.upgrade() {
-            reveal(&ui);
-        }
-    })
 }
 
 /// Значок окна для X11/XWayland (`_NET_WM_ICON`). Под Wayland значок в доке и alt-tab берётся
@@ -1165,7 +1167,7 @@ fn set_window_icon(ui: &AppWindow) {
 
 /// Показать окно: при запуске в трей оно ещё не создано, после закрытия в трей — спрятано.
 fn reveal(ui: &AppWindow) {
-    let first = hwnd(ui) == 0;
+    let first = !sys::created(ui.window());
     if let Err(e) = ui.show() {
         log(format!("окно не показалось: {e}"));
         return;
@@ -1193,55 +1195,8 @@ fn apply_mode(ui: &AppWindow, lite: bool) {
     }
 }
 
-/// База масштаба: Windows — DPI монитора окна, Linux — фактор окна от winit
-/// (дробный масштаб Wayland композитора уже учтён в нём).
-fn dpi_base(ui: &AppWindow, w: &slint::Window) -> f32 {
-    #[cfg(windows)]
-    {
-        let _ = w;
-        win::dpi_scale(hwnd(ui))
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = ui;
-        w.scale_factor()
-    }
-}
-
 /// Окно winit создаётся не сразу после `show()` (до запуска цикла событий и с OpenGL),
-/// поэтому масштаб и прочее применяются, когда у окна появится HWND.
-fn finish_reveal(weak: slint::Weak<AppWindow>, first: bool, tries: u32) {
-    #[cfg(not(target_os = "windows"))]
-    {
-        // Окно winit появляется позже `show()`; один раз пробуем применить масштаб —
-        // дальше его применяет on_window_resized. Без петли: шторм вызовов на Linux
-        // рассинхронизировал рендерер (клики и обновления UI замирали).
-        let _ = (first, tries);
-        if let Some(ui) = weak.upgrade() {
-            apply_ui_scale(&ui);
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let Some(ui) = weak.upgrade() else { return };
-        let h = hwnd(&ui);
-        if h == 0 {
-            if tries < 100 {
-                Timer::single_shot(Duration::from_millis(20), move || finish_reveal(weak, first, tries + 1));
-            }
-            return;
-        }
-        if first {
-            apply_ui_scale(&ui);
-            win::round_corners(h);
-            let _ = std::fs::write(crate::config::dir().join("hwnd"), h.to_string());
-            win::set_icon(h);
-        }
-        win::show(h);
-        win::force_foreground(h);
-    }
-}
-
+/// поэтому масштаб и прочее применяются, когда окно появится.
 /// Завершить «нажатие» после перемещения или изменения размера окна.
 ///
 /// Пока пользователь тянет окно за заголовок или край, указатель принадлежит композитору
@@ -1251,8 +1206,6 @@ fn finish_reveal(weak: slint::Weak<AppWindow>, first: bool, tries: u32) {
 /// выглядит мёртвым, пока не придёт следующая полная пара нажатие-отпускание.
 /// Поэтому отпускание доставляем сами, сразу после старта перемещения.
 fn settle_pointer_after_move(ui: &AppWindow) {
-    // Именно отложенно: обработчик нажатия выполняется внутри разбора этого же события,
-    // и «захват» элемента выставляется уже после возврата из него.
     let weak = ui.as_weak();
     let _ = slint::invoke_from_event_loop(move || {
         let Some(ui) = weak.upgrade() else { return };
@@ -1265,44 +1218,16 @@ fn settle_pointer_after_move(ui: &AppWindow) {
     });
 }
 
-/// Рабочая область монитора с окном (лево, верх, право, низ) в физических пикселях.
-/// Windows учитывает панель задач, Linux — весь монитор: winit не отдаёт рабочую область.
-fn work_area(ui: &AppWindow) -> (i32, i32, i32, i32) {
-    #[cfg(windows)]
-    {
-        win::work_area(hwnd(ui))
+fn finish_reveal(weak: slint::Weak<AppWindow>, first: bool, tries: u32) {
+    let Some(ui) = weak.upgrade() else { return };
+    if !sys::created(ui.window()) && tries < 100 {
+        Timer::single_shot(Duration::from_millis(20), move || finish_reveal(weak, first, tries + 1));
     }
-    #[cfg(not(windows))]
-    {
-        let mut area = (0, 0, 1920, 1080);
-        ui.window().with_winit_window(|w| {
-            if let Some(m) = w.current_monitor().or_else(|| w.available_monitors().next()) {
-                let p = m.position();
-                let s = m.size();
-                area = (p.x, p.y, p.x + s.width as i32, p.y + s.height as i32);
-            }
-        });
-        area
+    if first {
+        apply_ui_scale(&ui);
+        sys::prepare(ui.window());
     }
-}
-
-fn hwnd(ui: &AppWindow) -> isize {
-    #[cfg(windows)]
-    {
-        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        ui.window()
-            .with_winit_window(|w| match w.window_handle().map(|h| h.as_raw()) {
-                Ok(RawWindowHandle::Win32(h)) => h.hwnd.get(),
-                _ => 0,
-            })
-            .unwrap_or(0)
-    }
-    // На Linux оконными функциями ведает композитор: hwnd ни для чего не нужен.
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = ui;
-        0
-    }
+    sys::raise(ui.window());
 }
 
 fn notifier() -> Arc<dyn Fn() + Send + Sync> {
@@ -1362,14 +1287,14 @@ fn start_updates(ui: &AppWindow) {
     });
     ui.global::<App>().on_update_install(|| {
         let Some(r) = UPDATE.with(|u| u.borrow().clone()) else { return };
-        // На Linux self-update нет: обновление — это новый deb, ведём на страницу релиза.
+        // На Linux self-update нет: обновление — это новый пакет, ведём на страницу релиза.
         #[cfg(not(windows))]
-        win::open_url(&r.page);
+        sys::open_url(&r.page);
         #[cfg(windows)]
         {
             // В релизе нет exe — обновить можно только руками, ведём на страницу.
             if r.exe.is_none() {
-                win::open_url(&r.page);
+                sys::open_url(&r.page);
                 return;
             }
             with_ctx(|c| c.ui().global::<App>().set_update_busy(true));
@@ -1384,7 +1309,7 @@ fn start_updates(ui: &AppWindow) {
                             c.ui().global::<App>().set_update_busy(false);
                             c.toast(format!("Не удалось обновить: {e}"));
                         });
-                        win::open_url(&r.page);
+                        sys::open_url(&r.page);
                     }
                 });
             });
@@ -1555,7 +1480,7 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
     let dark = match cfg.theme.as_str() {
         "dark" => true,
         "light" => false,
-        _ => !win::system_light_theme(),
+        _ => !sys::system_light_theme(),
     };
     let assets = load_assets();
     if assets.is_none() {
@@ -1563,7 +1488,6 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
     }
 
     let ui = AppWindow::new()?;
-    let _ = WAKE_UI.set(ui.as_weak());
     ui.global::<Theme>().set_dark(true);
     let lite = cfg.mode == "lite";
     apply_mode(&ui, lite);
@@ -1600,16 +1524,15 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
         crate::discord::DiscordCfg { enabled: cfg.discord_enabled, app_id: cfg.discord_app_id.clone() },
     );
     app.set_discord_on(cfg.discord_enabled);
-    app.set_autostart(win::autostart_enabled());
-    // MPRIS-виджет GNOME Shell и медиа-клавиши (Windows: no-op-заглушка).
-    let mpris = crate::mpris::spawn(player.clone());
+    app.set_autostart(sys::autostart_enabled());
+    app.set_linux(cfg!(target_os = "linux"));
+    app.set_translations(crate::i18n::available());
     app.set_download_dir(music_dir(&cfg).display().to_string().into());
     let ctx = Rc::new(Ctx {
         ui: ui.as_weak(),
         lite: Cell::new(lite),
         player: player.clone(),
         discord,
-        mpris,
         images: Images::new(lite),
         tracks,
         st: RefCell::new(State {
@@ -1885,7 +1808,7 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
             w.set_size(slint::LogicalSize::new(400.0, 88.0));
             let k = w.scale_factor();
             let (mw, mh, gap) = ((400.0 * k) as i32, (88.0 * k) as i32, (16.0 * k) as i32);
-            let (l, t, r, b) = work_area(&ui);
+            let (l, t, r, b) = sys::work_area(w);
             let p = mini_pos.get().unwrap_or(slint::PhysicalPosition::new(r - mw - gap, b - mh - gap));
             w.set_position(slint::PhysicalPosition::new(p.x.min(r - mw).max(l), p.y.min(b - mh).max(t)));
         } else {
@@ -1936,69 +1859,35 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
             ui.window().set_minimized(true);
         }
     });
-    // Как у оригинала на Windows: пока играет трек, окно прячется, иначе приложение закрывается.
-    // Спрятанное окно не завершает процесс: MPRIS и медиа-клавиши продолжают управлять плеером,
-    // повторный запуск (wake-сокет) показывает окно снова.
-    let weak = ui.as_weak();
-    let p = player.clone();
-    app.on_close(move || {
-        if input_debug() {
-            log(format!("ввод: клик «закрыть» (играет: {})", p.state().playing));
-        }
-        if p.state().playing {
-            if let Some(ui) = weak.upgrade() {
-                let _ = ui.window().hide();
-                win::trim_memory();
-                return;
-            }
-        }
-        quit();
-    });
-
-    let weak = ui.as_weak();
-    let p = player.clone();
-    crate::tray::install(
-        move |e| {
-            use crate::tray::Event;
-            let Some(ui) = weak.upgrade() else { return };
-            match e {
-                Event::Toggle => {
-                    let h = hwnd(&ui);
-                    if h == 0 || !win::is_visible(h) {
-                        reveal(&ui);
-                    } else if win::is_iconic(h) {
-                        win::show(h);
-                        win::force_foreground(h);
-                    } else {
-                        ui.window().set_minimized(true);
+    // Как у оригинала на Windows: пока играет трек, окно прячется в трей, иначе приложение закрывается.
+    // На Linux трея пока нет, там закрытие всегда выход.
+    #[cfg(windows)]
+    {
+        let weak = ui.as_weak();
+        let p = player.clone();
+        app.on_close(move || {
+            if p.state().playing {
+                if let Some(ui) = weak.upgrade() {
+                    if sys::created(ui.window()) {
+                        sys::hide(ui.window());
+                        sys::trim_memory();
+                        return;
                     }
                 }
-                Event::Show => reveal(&ui),
-                Event::PlayPause => ui.global::<App>().invoke_play_pause(),
-                Event::Prev => p.send(Cmd::Prev),
-                Event::Next => p.send(Cmd::Next),
-                Event::Updates => win::open_url(concat!(env!("CARGO_PKG_REPOSITORY"), "/releases")),
-                Event::Terms => win::open_url("https://yandex.ru/legal/music_mobile_agreement/"),
-                Event::Recommendations => win::open_url("https://music.yandex.ru/legal/recommendations/ru/#music"),
-                Event::Support => win::open_url(SUPPORT_CHAT),
-                Event::Quit => quit(),
             }
-        },
-        {
-            let weak = ui.as_weak();
-            let p = player.clone();
-            move || {
-                let h = weak.upgrade().map(|ui| hwnd(&ui)).unwrap_or(0);
-                let s = p.state();
-                crate::tray::MenuState {
-                    minimized: h == 0 || !win::is_visible(h) || win::is_iconic(h),
-                    playing: s.playing,
-                    can_prev: s.track.is_some(),
-                    can_next: s.track.is_some(),
-                }
-            }
-        },
-    );
+            quit();
+        });
+        install_tray(&ui, &player);
+    }
+    #[cfg(not(windows))]
+    {
+        app.on_close(quit);
+        let weak = ui.as_weak();
+        sys::on_wake(move || {
+            let _ = weak.upgrade_in_event_loop(|ui| reveal(&ui));
+        });
+        install_mpris(&ui, &player);
+    }
 
     // Диагностика ввода: `YAMUSIC_INPUT_DEBUG=1 yamusic-rs` пишет в log.txt физические
     // координаты курсора, логические (как их видит Slint), масштаб окна, фокус и размер.
@@ -2064,16 +1953,6 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
     tick.start(TimerMode::Repeated, Duration::from_millis(250), move || {
         with_ctx(|c| {
             c.sync_player();
-            // MPRIS видит состояние плеера с точностью тика; внутри решает, что менять.
-            let s = c.player.state();
-            c.mpris.sync(crate::mpris::Snapshot {
-                playing: s.playing,
-                volume: s.volume,
-                position: s.position,
-                repeat: s.repeat,
-                shuffle: s.shuffle,
-                track: s.track.clone(),
-            });
         });
     });
     // Строки текста переключаются точнее, чем раз в 250 мс.
@@ -2085,6 +1964,26 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
             if app.get_fullscreen() && app.get_fs_mode() == 2 && app.get_playing() {
                 c.update_lyric_current(c.player.state().position);
             }
+        })
+    });
+
+    // «Как в системе» следит за темой Windows и на ходу. На Linux её отдаёт портал через
+    // gdbus, запускать его каждые пару секунд не стоит.
+    #[cfg(windows)]
+    let theme_tick = Timer::default();
+    #[cfg(windows)]
+    theme_tick.start(TimerMode::Repeated, Duration::from_secs(2), || {
+        with_ctx(|c| {
+            if c.st.borrow().cfg.theme != "system" {
+                return;
+            }
+            let dark = !sys::system_light_theme();
+            if c.st.borrow().dark == dark {
+                return;
+            }
+            c.st.borrow_mut().dark = dark;
+            let ui = c.ui();
+            ui.global::<Theme>().set_dark(ui.global::<App>().get_page() == Page::Wave || dark);
         })
     });
 
@@ -2102,11 +2001,84 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
         reveal(&ui);
     }
     slint::run_event_loop_until_quit()?;
-    crate::tray::remove();
+    sys::cleanup();
     // Фоновые потоки (аудио, сеть, обложки) не ждём: иначе процесс может остаться
     // без окна и держать мьютекс, и следующий запуск молча закроется.
-    let _ = std::fs::remove_file(crate::config::dir().join("hwnd"));
     std::process::exit(0)
+}
+
+/// Медиаклавиши и плеер в панели Linux. Команды выполняются так же, как кнопки в окне.
+#[cfg(target_os = "linux")]
+fn install_mpris(ui: &AppWindow, player: &Player) {
+    let weak = ui.as_weak();
+    let p = player.clone();
+    crate::mpris::spawn(player.clone(), move |e| {
+        let p = p.clone();
+        let _ = weak.upgrade_in_event_loop(move |ui| {
+            use crate::mpris::Event;
+            let app = ui.global::<App>();
+            let s = p.state();
+            match e {
+                Event::PlayPause => app.invoke_play_pause(),
+                // GNOME медиа-клавишей шлёт именно Play/Pause: Resume и Pause — точечные команды.
+                Event::Play => p.send(Cmd::Resume),
+                Event::Pause => p.send(Cmd::Pause),
+                Event::Next => p.send(Cmd::Next),
+                Event::Prev => p.send(Cmd::Prev),
+                Event::Seek(sec) => p.send(Cmd::Seek(sec)),
+                Event::SeekBy(sec) => p.send(Cmd::Seek((s.position + sec).max(0.0))),
+                Event::Volume(v) => app.invoke_set_volume(v),
+                Event::Raise => reveal(&ui),
+                Event::Quit => quit(),
+            }
+        });
+    });
+}
+
+#[cfg(windows)]
+fn install_tray(ui: &AppWindow, player: &Player) {
+    let weak = ui.as_weak();
+    let p = player.clone();
+    crate::tray::install(
+        move |e| {
+            use crate::tray::Event;
+            let Some(ui) = weak.upgrade() else { return };
+            match e {
+                Event::Toggle => {
+                    if !sys::is_shown(ui.window()) {
+                        reveal(&ui);
+                    } else if sys::is_minimized(ui.window()) {
+                        sys::raise(ui.window());
+                    } else {
+                        ui.window().set_minimized(true);
+                    }
+                }
+                Event::Show => reveal(&ui),
+                Event::PlayPause => ui.global::<App>().invoke_play_pause(),
+                Event::Prev => p.send(Cmd::Prev),
+                Event::Next => p.send(Cmd::Next),
+                Event::Updates => sys::open_url(concat!(env!("CARGO_PKG_REPOSITORY"), "/releases")),
+                Event::Terms => sys::open_url("https://yandex.ru/legal/music_mobile_agreement/"),
+                Event::Recommendations => sys::open_url("https://music.yandex.ru/legal/recommendations/ru/#music"),
+                Event::Support => sys::open_url(SUPPORT_CHAT),
+                Event::Quit => quit(),
+            }
+        },
+        {
+            let weak = ui.as_weak();
+            let p = player.clone();
+            move || {
+                let minimized = weak.upgrade().is_none_or(|ui| !sys::is_shown(ui.window()) || sys::is_minimized(ui.window()));
+                let s = p.state();
+                crate::tray::MenuState {
+                    minimized,
+                    playing: s.playing,
+                    can_prev: s.track.is_some(),
+                    can_next: s.track.is_some(),
+                }
+            }
+        },
+    );
 }
 
 // ---------- цвета волны и плеера ----------
@@ -2234,63 +2206,6 @@ fn card_from_playlist(p: &Playlist) -> Card {
         explicit: false,
         target: format!("playlist:{}:{}", p.uid, p.kind),
     }
-}
-
-/// Скопировать текст в буфер обмена: Windows — `clip`, Linux — `wl-copy`/`xclip`.
-/// Возвращает false, если ни один способ не сработал (тогда пользователю нужен честный тост).
-fn copy_text(text: &str) -> bool {
-    use std::io::Write as _;
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        if let Ok(mut child) = std::process::Command::new("clip")
-            .creation_flags(0x0800_0000)
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-        {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(text.as_bytes());
-            }
-            return child.wait().map(|s| s.success()).unwrap_or(false);
-        }
-        false
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let tools: [&[&str]; 2] = [&["wl-copy"], &["xclip", "-selection", "clipboard"]];
-        for tool in tools {
-            match std::process::Command::new(tool[0]).args(&tool[1..]).stdin(std::process::Stdio::piped()).spawn() {
-                Ok(mut child) => {
-                    if let Some(mut stdin) = child.stdin.take() {
-                        let _ = stdin.write_all(text.as_bytes());
-                    }
-                    // Ждём с потолком: зависший инструмент буфера обмена не должен
-                    // подвешивать поток интерфейса.
-                    match wait_child(child, 1500) {
-                        Some(true) => return true,
-                        Some(false) => crate::config::log(format!("буфер обмена: {} завершился с ошибкой", tool[0])),
-                        None => crate::config::log(format!("буфер обмена: {} не ответил за 1.5 с", tool[0])),
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    crate::config::log(format!("буфер обмена: {} не найден", tool[0]));
-                }
-                Err(e) => crate::config::log(format!("буфер обмена: {} — {e}", tool[0])),
-            }
-        }
-        false
-    }
-}
-
-/// Дождаться выхода процесса не дольше `ms`, не блокируя вызывающий поток.
-#[cfg(not(target_os = "windows"))]
-fn wait_child(child: std::process::Child, ms: u64) -> Option<bool> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut child = child;
-        let _ = tx.send(child.wait().map(|s| s.success()).unwrap_or(false));
-    });
-    rx.recv_timeout(std::time::Duration::from_millis(ms)).ok()
 }
 
 fn track_link(t: &Track) -> String {
@@ -2466,8 +2381,8 @@ impl Ctx {
         self.player.send(Cmd::Logout);
         {
             let mut st = self.st.borrow_mut();
-            st.cfg.token = None;
-            st.cfg.refresh_token = None;
+            st.cfg.forget_token();
+            st.cfg.forget_refresh();
             st.cfg.token_expires = None;
             st.cfg.save();
             st.net = None;
@@ -2543,6 +2458,12 @@ impl Ctx {
     fn open_card(self: &Rc<Self>, block: &str, i: usize) {
         match block {
             "chart" => return self.navigate(Page::Chart, None, true),
+            "artist-tracks" => {
+                if let Some((id, _)) = self.current_artist() {
+                    self.navigate(Page::List, Some(format!("artist-tracks:{id}")), true);
+                }
+                return;
+            }
             "artist-more" => {
                 let (x, y) = (self.ui().window().size().width as f32 / self.ui().window().scale_factor() / 2.0, 300.0);
                 return self.open_artist_menu(x, y);
@@ -2811,7 +2732,7 @@ impl Ctx {
             let dark = match mode {
                 "dark" => true,
                 "light" => false,
-                _ => !win::system_light_theme(),
+                _ => !sys::system_light_theme(),
             };
             app.set_theme_mode(mode.into());
             {
@@ -2825,9 +2746,9 @@ impl Ctx {
         }
         app.set_account_open(false);
         match id {
-            "account" => win::open_url("https://id.yandex.ru"),
+            "account" => sys::open_url("https://id.yandex.ru"),
             "settings" => self.navigate(Page::Settings, None, true),
-            "support" => win::open_url(SUPPORT_CHAT),
+            "support" => sys::open_url(SUPPORT_CHAT),
             _ => {}
         }
     }
@@ -2838,7 +2759,7 @@ impl Ctx {
         match id {
             "clear" => {
                 self.images.clear();
-                win::release_memory();
+                sys::release_memory();
                 self.toast("Память очищена");
             }
             "mode:smooth" | "mode:lite" => {
@@ -2847,7 +2768,7 @@ impl Ctx {
                 self.lite.set(lite);
                 self.images.set_lite(lite);
                 if lite {
-                    win::release_memory();
+                    sys::release_memory();
                 }
                 let mut st = self.st.borrow_mut();
                 st.cfg.mode = if lite { "lite" } else { "smooth" }.to_string();
@@ -2866,13 +2787,13 @@ impl Ctx {
             }
             "download-dir" => {
                 let cur = music_dir(&self.st.borrow().cfg).display().to_string();
-                let Some(dir) = win::pick_folder(hwnd(&ui), &crate::i18n::tr("Папка для скачивания"), &cur) else { return };
+                let Some(dir) = sys::pick_folder(ui.window(), &crate::i18n::tr("Папка для скачивания"), &cur) else { return };
                 app.set_download_dir(dir.clone().into());
                 let mut st = self.st.borrow_mut();
                 st.cfg.download_dir = dir;
                 st.cfg.save();
             }
-            "about" => win::open_url(env!("CARGO_PKG_REPOSITORY")),
+            "about" => sys::open_url(env!("CARGO_PKG_REPOSITORY")),
             "discord" => {
                 #[cfg(not(target_os = "windows"))]
                 {
@@ -2892,7 +2813,7 @@ impl Ctx {
             }
             "autostart" => {
                 let on = !app.get_autostart();
-                if win::set_autostart(on) {
+                if sys::set_autostart(on) {
                     app.set_autostart(on);
                 } else {
                     self.toast("Не удалось изменить автозапуск");
@@ -2955,7 +2876,7 @@ impl Ctx {
         let st = self.st.borrow();
         match st.list_key.as_deref()? {
             "likes" => Some(format!("playlist:{}:3", st.uid)),
-            k => Some(k.to_string()),
+            k => Some(k.strip_prefix("artist-tracks:").map_or_else(|| k.to_string(), |id| format!("artist:{id}"))),
         }
     }
 
@@ -3044,8 +2965,8 @@ impl Ctx {
     fn list_change_cover(self: &Rc<Self>) {
         let Some((uid, kind, _)) = self.own_playlist() else { return };
         let Some(net) = self.st.borrow().net.clone() else { return };
-        let owner = hwnd(&self.ui());
-        let Some(path) = win::pick_image(owner, &crate::i18n::tr("Изменить обложку")) else { return };
+        let ui = self.ui();
+        let Some(path) = sys::pick_image(ui.window(), &crate::i18n::tr("Изменить обложку")) else { return };
         std::thread::spawn(move || {
             let res = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|bytes| {
                 // Ограничение оригинала: файл до 20 МБ.
@@ -3196,7 +3117,7 @@ impl Ctx {
                     self.start();
                 }
                 "share" => {
-                    copy_text(&format!("https://music.yandex.ru/artist/{aid}"));
+                    sys::copy_text(&format!("https://music.yandex.ru/artist/{aid}"));
                     self.toast("Ссылка скопирована");
                 }
                 _ => {}
@@ -3229,7 +3150,7 @@ impl Ctx {
                 "delete" => self.list_delete(),
                 "share-link" | "share-html" => {
                     if let Some(s) = self.list_link(rest == "share-html") {
-                        copy_text(&s);
+                        sys::copy_text(&s);
                         self.toast(if rest == "share-html" { "HTML-код скопирован" } else { "Ссылка скопирована" });
                     }
                 }
@@ -3270,7 +3191,7 @@ impl Ctx {
             "dislike" => self.player.send(Cmd::Dislike),
             "lyrics" => self.open_fullscreen(2),
             "share-link" => {
-                copy_text(&track_link(&t));
+                sys::copy_text(&track_link(&t));
                 self.toast("Ссылка скопирована");
             }
             "share-html" => {
@@ -3282,7 +3203,7 @@ impl Ctx {
                 if let Some(a) = t.artist_list.first() {
                     msg += &format!(" — <a href=\"https://music.yandex.ru/artist/{}\">{}</a>", a.id, a.name);
                 }
-                copy_text(&iframe_code(&frame, 614, 244, &msg));
+                sys::copy_text(&iframe_code(&frame, 614, 244, &msg));
                 self.toast("HTML-код скопирован");
             }
             "album" => {
@@ -3298,7 +3219,7 @@ impl Ctx {
                 }
             }
             "info" => self.toast(format!("{} — {} · {}", t.artists, t.title, mmss(t.duration_ms as f32 / 1000.0))),
-            "complain" => win::open_url("https://yandex.ru/support/music/"),
+            "complain" => sys::open_url("https://yandex.ru/support/music/"),
             _ => {}
         }
     }
@@ -3671,7 +3592,7 @@ impl Ctx {
         }
         self.images.trim();
         if self.lite.get() {
-            win::release_memory();
+            sys::release_memory();
         }
     }
 
@@ -3850,27 +3771,7 @@ fn music_dir(cfg: &Config) -> std::path::PathBuf {
     if !cfg.download_dir.is_empty() {
         return cfg.download_dir.clone().into();
     }
-    #[cfg(windows)]
-    {
-        return std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into())).join("Music").join("Яндекс Музыка");
-    }
-    // Linux: каталог музыки из xdg-user-dirs (МУЗЫКА/Музыка в зависимости от локали),
-    // иначе ~/Music. Раньше здесь читался %USERPROFILE% и файлы падали в текущий каталог.
-    #[cfg(not(windows))]
-    {
-        let xdg = std::process::Command::new("xdg-user-dir")
-            .arg("MUSIC")
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|p| p.starts_with('/') && p != "/");
-        let base = xdg
-            .map(std::path::PathBuf::from)
-            .or_else(|| std::env::var("HOME").ok().map(|h| std::path::PathBuf::from(h).join("Music")))
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
-        base.join("Яндекс Музыка")
-    }
+    sys::music_dir().join("Яндекс Музыка")
 }
 
 /// Расширение по первым байтам: mp3, AAC (ADTS), MP4 или FLAC.
@@ -4070,19 +3971,11 @@ fn register_extra(app: &App) {
             }
         })
     });
-    app.on_login_open(|| {
-        crate::config::log("клик: «Открыть ya.ru/device»");
-        win::open_url("https://ya.ru/device");
-    });
+    app.on_login_open(|| sys::open_url("https://ya.ru/device"));
     app.on_login_copy(|| {
         with_ctx(|c| {
-            let code = c.ui().global::<App>().get_login_code();
-            crate::config::log(format!("клик: «Скопировать код» ({code})"));
-            if copy_text(&code) {
-                c.toast("Код скопирован");
-            } else {
-                c.toast("Не удалось скопировать код");
-            }
+            sys::copy_text(&c.ui().global::<App>().get_login_code());
+            c.toast("Код скопирован");
         })
     });
     app.on_menu_playlist(|i| with_ctx(|c| c.menu_playlist(i.max(0) as usize)));

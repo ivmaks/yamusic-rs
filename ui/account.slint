@@ -164,7 +164,7 @@ export component AccountMenu inherits Rectangle {
             x: 12px;
             y: 276px - 10px - self.height;
             width: 296px;
-            height: 4 * 48px;
+            height: (App.translations ? 4 : 1) * 48px;
             border-radius: 20px;
             background: bg;
             drop-shadow-blur: 16px;
@@ -172,9 +172,9 @@ export component AccountMenu inherits Rectangle {
             drop-shadow-color: #00000033;
             TouchArea { }
             PickRow { y: 0; width: parent.width; ink: ink; code: "ru"; text: "Русский"; selected: App.lang == "ru"; clicked => { root.act("lang:ru"); } }
-            PickRow { y: 48px; width: parent.width; ink: ink; code: "en"; text: "English"; selected: App.lang == "en"; clicked => { root.act("lang:en"); } }
-            PickRow { y: 96px; width: parent.width; ink: ink; code: "uz"; text: "O‘zbek"; selected: App.lang == "uz"; clicked => { root.act("lang:uz"); } }
-            PickRow { y: 144px; width: parent.width; ink: ink; code: "kk"; text: "Қазақша"; selected: App.lang == "kk"; clicked => { root.act("lang:kk"); } }
+            PickRow { y: 48px; visible: App.translations; width: parent.width; ink: ink; code: "en"; text: "English"; selected: App.lang == "en"; clicked => { root.act("lang:en"); } }
+            PickRow { y: 96px; visible: App.translations; width: parent.width; ink: ink; code: "uz"; text: "O‘zbek"; selected: App.lang == "uz"; clicked => { root.act("lang:uz"); } }
+            PickRow { y: 144px; visible: App.translations; width: parent.width; ink: ink; code: "kk"; text: "Қазақша"; selected: App.lang == "kk"; clicked => { root.act("lang:kk"); } }
         }
         if App.account-sub == 1: Rectangle {
             x: 12px;
@@ -371,8 +371,8 @@ export component SettingsPage inherits Rectangle {
                 clicked => { App.setting("discord"); }
             }
             SettingItem {
-                title: T.t("Запускать вместе с Windows");
-                desc: T.t("Приложение откроется в трее, без окна");
+                title: App.linux ? T.t("Запускать вместе с системой") : T.t("Запускать вместе с Windows");
+                desc: App.linux ? T.t("Приложение откроется при входе в систему") : T.t("Приложение откроется в трее, без окна");
                 toggle: true;
                 on: App.autostart;
                 clicked => { App.setting("autostart"); }

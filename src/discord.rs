@@ -1,4 +1,4 @@
-//! Discord Rich Presence через локальный IPC Discord (named pipe) — без сторонних библиотек.
+//! Discord Rich Presence через локальный IPC Discord (named pipe на Windows, unix-сокет на Linux) — без сторонних библиотек.
 //! Показывает «Слушает …»: трек, исполнитель, обложка, полоска прогресса, кнопка на трек.
 //!
 //! Только Windows: на Linux Discord-IPC — unix-сокет другого формата, поэтому поток там
@@ -10,7 +10,6 @@ use crate::api::Track;
 use crate::config::log;
 use crate::player::{Player, Status};
 use serde_json::{json, Value};
-use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -34,9 +33,28 @@ pub struct Discord {
     pub status: Mutex<String>,
 }
 
+#[cfg(windows)]
+type Pipe = std::fs::File;
+#[cfg(unix)]
+type Pipe = std::os::unix::net::UnixStream;
+
 struct Conn {
-    pipe: File,
+    pipe: Pipe,
     nonce: u64,
+}
+
+#[cfg(windows)]
+fn open_pipe(i: u32) -> Option<Pipe> {
+    std::fs::OpenOptions::new().read(true).write(true).open(format!(r"\\.\pipe\discord-ipc-{i}")).ok()
+}
+
+/// Сокет лежит в XDG_RUNTIME_DIR, у Flatpak и Snap — в своих подпапках.
+#[cfg(unix)]
+fn open_pipe(i: u32) -> Option<Pipe> {
+    let dirs = ["XDG_RUNTIME_DIR", "TMPDIR"].into_iter().filter_map(std::env::var_os).map(std::path::PathBuf::from);
+    dirs.chain([std::path::PathBuf::from("/tmp")])
+        .flat_map(|d| ["", "app/com.discordapp.Discord", "snap.discord"].map(|sub| d.join(sub).join(format!("discord-ipc-{i}"))))
+        .find_map(|p| Pipe::connect(p).ok())
 }
 
 fn now_ms() -> i64 {
@@ -47,7 +65,7 @@ impl Conn {
     fn connect(app_id: &str) -> Result<Conn, String> {
         let mut last = "Discord не запущен".to_string();
         for i in 0..10 {
-            let Ok(pipe) = OpenOptions::new().read(true).write(true).open(format!(r"\\.\pipe\discord-ipc-{i}")) else {
+            let Some(pipe) = open_pipe(i) else {
                 continue;
             };
             let mut c = Conn { pipe, nonce: 0 };

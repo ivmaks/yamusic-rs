@@ -37,8 +37,8 @@ fn client() -> reqwest::blocking::Client {
 }
 
 fn post(form: &[(&str, &str)], path: &str) -> Result<Value, String> {
-    let resp = client().post(format!("{OAUTH_BASE}{path}")).form(form).send().map_err(|e| format!("сеть: {e}"))?;
-    let text = resp.text().map_err(|e| format!("сеть: {e}"))?;
+    let resp = client().post(format!("{OAUTH_BASE}{path}")).form(form).send().map_err(|e| format!("сеть: {}", crate::config::chain(&e)))?;
+    let text = resp.text().map_err(|e| format!("сеть: {}", crate::config::chain(&e)))?;
     serde_json::from_str(&text).map_err(|_| format!("ответ OAuth: {}", text.chars().take(200).collect::<String>()))
 }
 
@@ -51,7 +51,7 @@ fn device_id() -> String {
             return id;
         }
     }
-    let seed = format!("{:?}{}{}", std::time::SystemTime::now(), std::process::id(), hostname());
+    let seed = format!("{:?}{}{}", std::time::SystemTime::now(), std::process::id(), crate::sys::hostname().unwrap_or_default());
     let id: String = {
         use md5::{Digest, Md5};
         Md5::digest(seed.as_bytes()).iter().map(|x| format!("{x:02x}")).collect()
@@ -61,20 +61,9 @@ fn device_id() -> String {
     id
 }
 
-/// Имя компьютера: Windows — `%COMPUTERNAME%`, Linux — `$HOSTNAME` или `/etc/hostname`.
-fn hostname() -> String {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .ok()
-        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
-        .map(|h| h.trim().to_string())
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "PC".into())
-}
-
 pub fn device_code() -> Result<DeviceCode, String> {
     let id = device_id();
-    let host = hostname();
+    let host = crate::sys::hostname().unwrap_or_else(|| "PC".into());
     // Это имя Яндекс показывает при вводе кода и в списке устройств аккаунта.
     let name = format!("{} ({host})", env!("APP_NAME"));
     let v = post(&[("client_id", OAUTH_CLIENT_ID), ("device_id", &id), ("device_name", &name)], "/device/code")?;

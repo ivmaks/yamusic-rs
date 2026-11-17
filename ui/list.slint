@@ -42,6 +42,9 @@ export component ListPage inherits Rectangle {
     property <bool> album: App.list-kind == "album";
     property <bool> likes: App.list-kind == "likes";
     property <bool> playlist: App.list-kind == "playlist";
+    // Все популярные треки исполнителя: шапка как у «Мне нравится», без описания.
+    property <bool> artist: App.list-kind == "artist";
+    property <bool> short-head: likes || artist;
     property <length> pad: 25px;
     property <length> text-x: pad + 204px + 28px;
     // Шапка: подпись 85, название 100, строки метаданных, кнопки.
@@ -51,8 +54,8 @@ export component ListPage inherits Rectangle {
     // В режиме правки поле названия на 8 px ниже обычного заголовка, всё ниже сдвигается на 8 px;
     // при правке описания под полем 120 px текста и кнопки «Сохранить» / «Отменить».
     property <length> edit-shift: App.list-edit == 1 ? 8px : 0px;
-    property <length> buttons-y: album ? 219px : likes ? 214px : App.list-edit == 2 ? 426px : 242px + desc-extra + edit-shift;
-    property <length> search-y: buttons-y + (likes ? 90px : 79px);
+    property <length> buttons-y: album ? 219px : short-head ? 214px : App.list-edit == 2 ? 426px : 242px + desc-extra + edit-shift;
+    property <length> search-y: buttons-y + (short-head ? 90px : 79px);
     property <length> rows-y: album ? buttons-y + 94px : search-y + 57px;
     property <length> row-x: playlist && App.list-own ? pad + 12px : pad;
     property <length> row-h: 56px;
@@ -74,6 +77,7 @@ export component ListPage inherits Rectangle {
             width: 204px;
             height: 204px;
             radius: Theme.radius-size-m;
+            round: artist;
             source: App.list-cover;
             cover-ta := TouchArea { mouse-cursor: MouseCursor.pointer; clicked => { App.open-cover("list"); } }
             if own && (cover-ta.has-hover || poster-ta.has-hover): Rectangle {
@@ -296,7 +300,7 @@ export component ListPage inherits Rectangle {
         }
         if !album: Text {
             x: text-x;
-            y: likes ? 162px : App.list-edit == 2 ? 374px : 190px + desc-extra + edit-shift;
+            y: short-head ? 162px : App.list-edit == 2 ? 374px : 190px + desc-extra + edit-shift;
             width: parent.width - text-x - pad;
             text: App.list-meta;
             overflow: elide;
@@ -315,7 +319,7 @@ export component ListPage inherits Rectangle {
             if album: HeaderButton { icon: App.list-liked ? Icons.liked-small : Icons.like-small; text: App.list-likes; clicked => { App.list-like(); } }
             if playlist: HeaderButton { icon: App.list-liked ? Icons.liked-small : Icons.like-small; text: App.list-likes; clicked => { App.list-like(); } }
             HeaderButton { icon: App.pinned ? Icons.pin-filled-small : Icons.pin-small; clicked => { App.list-pin(); } }
-            HeaderButton {
+            if !artist: HeaderButton {
                 icon: Icons.more-small;
                 clicked => { App.open-list-menu(self.absolute-position.x + self.width / 2, self.absolute-position.y + self.height); }
             }

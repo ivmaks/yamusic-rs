@@ -12,12 +12,13 @@ pub struct Config {
     pub token: Option<String>,
     #[serde(skip)]
     pub refresh_token: Option<String>,
-    /// Токены, зашифрованные DPAPI (src/secret.rs).
+    /// Токены под DPAPI или в связке ключей Linux (src/secret.rs).
     #[serde(skip_serializing_if = "Option::is_none")]
     token_sealed: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     refresh_sealed: Option<String>,
-    /// Старый формат — токен открытым текстом. При запуске переводится в зашифрованный.
+    /// Токен открытым текстом: старый формат или Linux без связки ключей. Как только спрятать есть
+    /// куда, при запуске переносится туда.
     #[serde(rename = "token", skip_serializing_if = "Option::is_none")]
     token_plain: Option<String>,
     /// Unix-время, когда токен истечёт.
@@ -70,19 +71,14 @@ impl Default for Config {
     }
 }
 
-/// Windows — `%APPDATA%\yamusic-rs`, Linux — `$XDG_CONFIG_HOME/yamusic-rs` (~/.config).
-/// Папка прежнего названия (yamusic-lite, ещё раньше yawave) переносится
+/// %APPDATA%\yamusic-rs или ~/.config/yamusic-rs. Папка прежнего названия (yamusic-lite, ещё раньше yawave) переносится
 /// молча, вместе с токеном и настройками. Если её держит запущенная старая версия, этот запуск
 /// работает со старой папкой, а перенос повторится в следующий раз.
 pub fn dir() -> PathBuf {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
-        // Windows — %APPDATA%; Linux — XDG_CONFIG_HOME или ~/.config.
-        let base = std::env::var("APPDATA")
-            .or_else(|_| std::env::var("XDG_CONFIG_HOME"))
-            .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.config")))
-            .unwrap_or_else(|_| ".".into());
-        let dir = PathBuf::from(base).join("yamusic-rs");
+        let base = crate::sys::config_base();
+        let dir = base.join("yamusic-rs");
         if !dir.exists() {
             if let Some(old) = ["yamusic-lite", "yawave"]
                 .iter()
@@ -99,6 +95,14 @@ pub fn dir() -> PathBuf {
     .clone()
 }
 
+/// Скачанные шрифты и значки. На Windows лежат рядом с настройками, на Linux — в ~/.cache.
+pub fn cache_dir() -> PathBuf {
+    #[cfg(windows)]
+    return dir();
+    #[cfg(not(windows))]
+    return crate::sys::cache_base().join("yamusic-rs");
+}
+
 impl Config {
     pub fn load() -> Self {
         let mut c: Config = std::fs::read_to_string(dir().join("config.json"))
@@ -108,7 +112,7 @@ impl Config {
         c.token = c.token_sealed.as_deref().and_then(crate::secret::open);
         c.refresh_token = c.refresh_sealed.as_deref().and_then(crate::secret::open);
         if c.token.is_none() && c.token_sealed.is_some() {
-            log("токен не расшифровался (другая учётная запись Windows?) — нужно войти заново");
+            log("сохранённый токен не прочитался (другая учётная запись, связка ключей заперта или в ней нет записи?) — нужно войти заново");
         }
         if let Some(plain) = c.token_plain.clone().filter(|t| !t.trim().is_empty()) {
             if c.token.is_none() {
@@ -123,17 +127,22 @@ impl Config {
     pub fn save(&self) {
         let _ = std::fs::create_dir_all(dir());
         let mut disk = self.clone();
-        disk.token_sealed = self.token.as_deref().and_then(crate::secret::seal);
-        disk.refresh_sealed = self.refresh_token.as_deref().and_then(crate::secret::seal);
-        // Без DPAPI (не Windows) — открытым текстом, как раньше.
+        // Токен не прочитался (связка ключей заперта) — запись о нём не трогаем, иначе после
+        // разблокировки входить придётся заново. Стирают её только forget_token и forget_refresh.
+        if let Some(t) = &self.token {
+            disk.token_sealed = crate::secret::seal("token", t);
+        }
+        if let Some(t) = &self.refresh_token {
+            disk.refresh_sealed = crate::secret::seal("refresh", t);
+        }
+        // Спрятать некуда (Linux без связки ключей) — открытым текстом, в файле только для владельца.
         disk.token_plain = if disk.token_sealed.is_none() { self.token.clone() } else { None };
         if let Ok(s) = serde_json::to_string_pretty(&disk) {
             let path = dir().join("config.json");
             let tmp = dir().join("config.json.tmp");
             if std::fs::write(&tmp, s).is_ok() {
-                // Токен в конфиге секретный: под Linux не даём читать его другим
-                // пользователям (0600, как у ssh-ключей).
-                #[cfg(not(windows))]
+                // Без DPAPI токен лежит открытым текстом: файл только для владельца.
+                #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
                     let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
@@ -142,10 +151,35 @@ impl Config {
             }
         }
     }
+
+    /// Выход или токен отозван: убрать и из памяти, и с диска.
+    pub fn forget_token(&mut self) {
+        self.token = None;
+        self.token_sealed = None;
+        crate::secret::forget("token");
+    }
+
+    pub fn forget_refresh(&mut self) {
+        self.refresh_token = None;
+        self.refresh_sealed = None;
+        crate::secret::forget("refresh");
+    }
 }
 
-/// Лог в каталоге данных приложения: `%APPDATA%\yamusic-rs\log.txt` (Windows),
-/// `~/.config/yamusic-rs/log.txt` (Linux).
+/// Ошибка вместе с причинами. reqwest сам пишет только «error sending request», а что
+/// случилось на самом деле (DNS, TLS, прокси, таймаут), лежит в source().
+pub fn chain(e: &dyn std::error::Error) -> String {
+    let mut s = e.to_string();
+    let mut src = e.source();
+    while let Some(x) = src {
+        s.push_str(": ");
+        s.push_str(&x.to_string());
+        src = x.source();
+    }
+    s
+}
+
+/// Лог в log.txt папки настроек.
 pub fn log(msg: impl AsRef<str>) {
     let msg = msg.as_ref();
     #[cfg(debug_assertions)]
