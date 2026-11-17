@@ -183,11 +183,11 @@ pub fn pick_folder(owner: &slint::Window, title: &str, start: &str) -> Option<St
     use windows_sys::Win32::UI::Shell::{
         SHBrowseForFolderW, SHGetPathFromIDListW, BFFM_INITIALIZED, BFFM_SETSELECTIONW, BIF_NEWDIALOGSTYLE, BIF_RETURNONLYFSDIRS, BROWSEINFOW,
     };
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::*;
-
-    fn h(x: isize) -> HWND {
-        x as HWND
+    unsafe extern "system" fn on_init(hwnd: HWND, msg: u32, _: isize, data: isize) -> i32 {
+        if msg == BFFM_INITIALIZED {
+            SendMessageW(hwnd, BFFM_SETSELECTIONW, 1, data);
+        }
+        0
     }
     let title = wide(title);
     let start = wide(start);
@@ -209,6 +209,9 @@ pub fn pick_folder(owner: &slint::Window, title: &str, start: &str) -> Option<St
             return None;
         }
     }
+    let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..n]))
+}
 
 /// Рабочая область монитора с окном (без панели задач), в физических пикселях: лево, верх, право, низ.
 pub fn work_area(w: &slint::Window) -> (i32, i32, i32, i32) {
@@ -222,152 +225,68 @@ pub fn work_area(w: &slint::Window) -> (i32, i32, i32, i32) {
     }
 }
 
-/// Linux: то же поведение через XDG. Оконные функции — no-op: ими управляет
-/// композитор, а `gui.rs` прячет/показывает окно через API Slint. Но-опы оставлены
-/// ради паритета API с Win32-веткой.
-#[cfg(not(target_os = "windows"))]
-#[allow(dead_code)]
-pub use linux::*;
-
-#[cfg(not(target_os = "windows"))]
-#[allow(dead_code)]
-mod linux {
-    const APP_ID: &str = "yamusic-rs";
-
-    // ---------- окно (композитор решает сам) ----------
-
-    pub fn is_visible(_hwnd: isize) -> bool {
-        false
+pub fn open_url(url: &str) {
+    let op = wide("open");
+    let u = wide(url);
+    unsafe {
+        ShellExecuteW(null_mut(), op.as_ptr(), u.as_ptr(), null(), null(), SW_SHOWNORMAL);
     }
+}
 
-    pub fn is_iconic(_hwnd: isize) -> bool {
-        false
+/// Отдать системе память, которую процесс сейчас не трогает (в основном —
+/// буферы драйвера видеокарты). Вызываем, когда окно спрятано в трей.
+pub fn trim_memory() {
+    unsafe {
+        SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
     }
+}
 
-    pub fn show(_hwnd: isize) {}
-
-    pub fn hide(_hwnd: isize) {}
-
-    pub fn force_foreground(_hwnd: isize) {}
-
-    pub fn dpi_scale(_hwnd: isize) -> f32 {
-        1.0
+/// Отдать системе свободные блоки кучи (после выброса обложек) и ужать рабочий набор.
+pub fn release_memory() {
+    use windows_sys::Win32::System::Memory::{GetProcessHeap, HeapCompact};
+    unsafe {
+        HeapCompact(GetProcessHeap(), 0);
     }
+    trim_memory();
+}
 
-    pub fn app_icon(_size: i32) {}
-
-    pub fn set_icon(_hwnd: isize) {}
-
-    pub fn round_corners(_hwnd: isize) {}
-
-    pub fn is_window(_hwnd: isize) -> bool {
-        false
+/// Светлая ли тема Windows для приложений.
+pub fn system_light_theme() -> bool {
+    let path = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+    let name = wide("AppsUseLightTheme");
+    let mut value: u32 = 1;
+    let mut size = 4u32;
+    unsafe {
+        RegGetValueW(HKEY_CURRENT_USER, path.as_ptr(), name.as_ptr(), RRF_RT_REG_DWORD, null_mut(), &mut value as *mut u32 as *mut c_void, &mut size);
     }
+    value != 0
+}
 
-    // ---------- системные мелочи ----------
+const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_NAME: &str = "yamusic-rs";
 
-    /// Диалог выбора картинки через xdg-desktop-portal (rfd). `owner` не нужен.
-    pub fn pick_image(_owner: isize, title: &str) -> Option<String> {
-        rfd::FileDialog::new()
-            .set_title(title)
-            .add_filter(crate::i18n::tr("Изображения"), &["jpg", "jpeg", "png"])
-            .pick_file()
-            .map(|p| p.display().to_string())
-    }
+/// Команда автозапуска: этот exe, сразу в трее.
+fn autostart_command() -> Option<String> {
+    Some(format!("\"{}\" --tray", std::env::current_exe().ok()?.display()))
+}
 
-    /// Системный диалог выбора папки (xdg-desktop-portal через rfd).
-    pub fn pick_folder(_owner: isize, title: &str, start: &str) -> Option<String> {
-        let mut d = rfd::FileDialog::new().set_title(title);
-        if !start.is_empty() {
-            d = d.set_directory(start);
-        }
-        d.pick_folder().map(|p| p.display().to_string())
-    }
+/// Записан ли автозапуск вместе с Windows.
+pub fn autostart_enabled() -> bool {
+    let (key, name) = (wide(RUN_KEY), wide(RUN_NAME));
+    unsafe { RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr(), RRF_RT_REG_SZ, null_mut(), null_mut(), null_mut()) == 0 }
+}
 
-    /// Открыть ссылку в браузере по умолчанию. Ребёнка не ждём в вызывающем потоке
-    /// (это поток интерфейса): на некоторых системах `xdg-open` живёт до закрытия
-    /// браузера. Ждём в фоне — так не остаётся зомби и не замирает окно.
-    pub fn open_url(url: &str) {
-        // Без `sh -c`: аргумент передаётся как есть, кавычки и экранирование не нужны.
-        match std::process::Command::new("xdg-open")
-            .arg(url)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(mut child) => {
-                let url = url.to_string();
-                let _ = std::thread::Builder::new().name("open-url".into()).spawn(move || match child.wait() {
-                    Ok(s) if s.success() => {}
-                    Ok(s) => crate::config::log(format!("xdg-open {url}: код {}", s.code().unwrap_or(-1))),
-                    Err(e) => crate::config::log(format!("xdg-open {url}: {e}")),
-                });
-            }
-            Err(e) => crate::config::log(format!("xdg-open: {e}")),
-        }
-    }
-
-    /// На Linux нечего отдавать ОС: память вернёт аллокатор/композитор.
-    pub fn trim_memory() {}
-
-    pub fn release_memory() {}
-
-    /// Светлая ли тема: спрашиваем GNOME (`color-scheme`). Всё остальное — тёмная
-    /// (у приложения тёмный дизайн), как и «system» без окружения GNOME.
-    pub fn system_light_theme() -> bool {
-        match std::process::Command::new("gsettings")
-            .args(["get", "org.gnome.desktop.interface", "color-scheme"])
-            .output()
-        {
-            Ok(o) if o.status.success() => {
-                let s = String::from_utf8_lossy(&o.stdout);
-                s.contains("prefer-light")
-            }
-            _ => false,
-        }
-    }
-
-    // ---------- автозапуск: ~/.config/autostart/yamusic-rs.desktop ----------
-
-    fn autostart_file() -> Option<std::path::PathBuf> {
-        // ~/.config/autostart — родитель каталога данных приложения (config::dir).
-        crate::config::dir().parent().map(|p| p.join("autostart").join(format!("{APP_ID}.desktop")))
-    }
-
-    fn autostart_command() -> Option<String> {
-        Some(format!("{} --hidden", std::env::current_exe().ok()?.display()))
-    }
-
-    fn write_desktop(exec: &str) -> std::io::Result<()> {
-        let Some(path) = autostart_file() else { return Err(std::io::ErrorKind::NotFound.into()) };
-        std::fs::create_dir_all(path.parent().unwrap())?;
-        let body = format!(
-            "[Desktop Entry]\nType=Application\nName={}\nExec={}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
-            env!("APP_NAME"),
-            exec
-        );
-        std::fs::write(&path, body)
-    }
-
-    /// Записан ли автозапуск вместе с системой.
-    pub fn autostart_enabled() -> bool {
-        autostart_file().map(|p| p.exists()).unwrap_or(false)
-    }
-
-    /// Включить или выключить автозапуск (файл в ~/.config/autostart).
-    pub fn set_autostart(on: bool) -> bool {
+/// Включить или выключить автозапуск (HKCU\…\Run, права администратора не нужны).
+pub fn set_autostart(on: bool) -> bool {
+    let (key, name) = (wide(RUN_KEY), wide(RUN_NAME));
+    unsafe {
         if !on {
-            return autostart_file().map(|p| std::fs::remove_file(p).is_ok()).unwrap_or(false);
+            let r = RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr());
+            return r == 0 || r == ERROR_FILE_NOT_FOUND;
         }
         let Some(cmd) = autostart_command() else { return false };
-        write_desktop(&cmd).is_ok()
-    }
-
-    /// Бинарь переехал — переписать Exec, если автозапуск включён.
-    pub fn refresh_autostart() {
-        if autostart_enabled() {
-            set_autostart(true);
-        }
+        let data = wide(&cmd);
+        RegSetKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr(), REG_SZ, data.as_ptr().cast(), (data.len() * 2) as u32) == 0
     }
 }
 

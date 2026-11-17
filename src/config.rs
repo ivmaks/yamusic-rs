@@ -53,9 +53,7 @@ impl Default for Config {
             token_plain: None,
             token_expires: None,
             volume: 0.6,
-            // Rich Presence использует именованный канал Windows: на Linux Discord-IPC
-            // другой, поэтому там интеграция выключена по умолчанию.
-            discord_enabled: cfg!(windows),
+            discord_enabled: true,
             discord_app_id: String::new(),
             theme: "system".into(),
             quality: 0,
@@ -80,11 +78,7 @@ pub fn dir() -> PathBuf {
         let base = crate::sys::config_base();
         let dir = base.join("yamusic-rs");
         if !dir.exists() {
-            if let Some(old) = ["yamusic-lite", "yawave"]
-                .iter()
-                .map(|n| dir.parent().unwrap_or(&dir).join(n))
-                .find(|p: &PathBuf| p.exists())
-            {
+            if let Some(old) = ["yamusic-lite", "yawave"].iter().map(|n| base.join(n)).find(|p| p.exists()) {
                 if std::fs::rename(&old, &dir).is_err() {
                     return old;
                 }

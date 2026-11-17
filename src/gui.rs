@@ -1140,31 +1140,6 @@ fn quit() {
     let _ = slint::quit_event_loop();
 }
 
-/// Значок окна для X11/XWayland (`_NET_WM_ICON`). Под Wayland значок в доке и alt-tab берётся
-/// из `.desktop` по app-id (`slint::set_xdg_app_id`), сам протокол значков окон не имеет.
-/// Картинку декодируем своим `image` и отдаём winit: у Slint для `Window.icon` нужен
-/// включённый декодер PNG, которого в этой сборке нет.
-#[cfg(not(target_os = "windows"))]
-fn set_window_icon(ui: &AppWindow) {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static SET: AtomicBool = AtomicBool::new(false);
-    if SET.swap(true, Ordering::Relaxed) {
-        return;
-    }
-    let bytes = include_bytes!("../packaging/icons/256.png");
-    let Ok(img) = image::load_from_memory(bytes) else {
-        log("значок окна: png не декодировался");
-        return;
-    };
-    let rgba = img.to_rgba8();
-    let (w, h) = (rgba.width(), rgba.height());
-    let Ok(icon) = winit::window::Icon::from_rgba(rgba.into_raw(), w, h) else {
-        log(format!("значок окна: некорректный буфер {w}×{h}"));
-        return;
-    };
-    ui.window().with_winit_window(|win| win.set_window_icon(Some(icon)));
-}
-
 /// Показать окно: при запуске в трей оно ещё не создано, после закрытия в трей — спрятано.
 fn reveal(ui: &AppWindow) {
     let first = !sys::created(ui.window());
@@ -1173,7 +1148,6 @@ fn reveal(ui: &AppWindow) {
         return;
     }
     #[cfg(not(target_os = "windows"))]
-    set_window_icon(ui);
     finish_reveal(ui.as_weak(), first, 0);
     // После скрытия и повторного показа композитор может держать старый кадр:
     // просим перерисовать, чтобы окно не выглядело «замороженным».
@@ -2020,9 +1994,9 @@ fn install_mpris(ui: &AppWindow, player: &Player) {
             let s = p.state();
             match e {
                 Event::PlayPause => app.invoke_play_pause(),
-                // GNOME медиа-клавишей шлёт именно Play/Pause: Resume и Pause — точечные команды.
-                Event::Play => p.send(Cmd::Resume),
-                Event::Pause => p.send(Cmd::Pause),
+                Event::Play if !s.playing => app.invoke_play_pause(),
+                Event::Pause if s.playing => app.invoke_play_pause(),
+                Event::Play | Event::Pause => {}
                 Event::Next => p.send(Cmd::Next),
                 Event::Prev => p.send(Cmd::Prev),
                 Event::Seek(sec) => p.send(Cmd::Seek(sec)),

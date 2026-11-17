@@ -1,43 +1,25 @@
 //! Значок в области уведомлений, как у оригинала: клик сворачивает и разворачивает окно,
 //! правый клик — меню с управлением плеером.
-//!
-//! Только Windows: на Linux трей отложен (в GNOME без AppIndicator-расширения он
-//! всё равно невидим), управление без окна даёт MPRIS (src/mpris.rs). Заглушки ниже
-//! сохраняют прежнее API, чтобы `gui.rs` и `main.rs` не зависели от ОС.
 
 use crate::sys::wide;
 use std::cell::RefCell;
-#[cfg(windows)]
 use std::rc::Rc;
-#[cfg(windows)]
 use std::ptr::{null, null_mut};
-#[cfg(windows)]
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
-#[cfg(windows)]
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-#[cfg(windows)]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, VK_MEDIA_NEXT_TRACK, VK_MEDIA_PLAY_PAUSE, VK_MEDIA_PREV_TRACK,
 };
-#[cfg(windows)]
 use windows_sys::Win32::UI::Shell::{Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW};
-#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-#[cfg(windows)]
 const CLASS: &str = "yamusic_rs_tray";
-/// Сообщения значка: клики и запрос на пробуждение от второго запуска.
-#[cfg(windows)]
 const WM_TRAY: u32 = WM_APP + 1;
 /// Второй запуск просит уже работающий экземпляр показать окно.
-#[cfg(windows)]
 const WM_WAKE: u32 = WM_APP + 2;
 /// Медиаклавиши клавиатуры: id горячей клавиши и код клавиши.
-#[cfg(windows)]
 const MEDIA_KEYS: [(i32, u16); 3] = [(1, VK_MEDIA_PLAY_PAUSE), (2, VK_MEDIA_NEXT_TRACK), (3, VK_MEDIA_PREV_TRACK)];
 
-// Linux-сборка события и меню не читает (трея нет) — API сохранено для gui.rs.
-#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     Toggle,
@@ -53,8 +35,6 @@ pub enum Event {
 }
 
 /// Что показать в меню: окно свёрнуто или спрятано, играет ли трек, есть ли соседние.
-// То же: поля читает только Windows-меню.
-#[allow(dead_code)]
 pub struct MenuState {
     pub minimized: bool,
     pub playing: bool,
@@ -62,7 +42,6 @@ pub struct MenuState {
     pub can_next: bool,
 }
 
-#[cfg(windows)]
 struct Tray {
     hwnd: HWND,
     icon: HICON,
@@ -71,17 +50,14 @@ struct Tray {
     state: Box<dyn Fn() -> MenuState>,
 }
 
-#[cfg(windows)]
 thread_local! {
     static TRAY: RefCell<Option<Tray>> = const { RefCell::new(None) };
 }
 
-#[cfg(windows)]
 fn load_icon() -> HICON {
     crate::sys::app_icon(unsafe { GetSystemMetrics(SM_CXSMICON) })
 }
 
-#[cfg(windows)]
 fn notify_data(hwnd: HWND, icon: HICON) -> NOTIFYICONDATAW {
     let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
     nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
@@ -97,7 +73,6 @@ fn notify_data(hwnd: HWND, icon: HICON) -> NOTIFYICONDATAW {
     nid
 }
 
-#[cfg(windows)]
 fn add_icon(hwnd: HWND, icon: HICON) {
     let nid = notify_data(hwnd, icon);
     unsafe {
@@ -107,7 +82,6 @@ fn add_icon(hwnd: HWND, icon: HICON) {
 
 /// Создаёт значок. События приходят в основной поток через очередь Slint,
 /// а не из оконной процедуры: так их обработка не вкладывается в цикл winit.
-#[cfg(windows)]
 pub fn install(on_event: impl Fn(Event) + 'static, state: impl Fn() -> MenuState + 'static) {
     unsafe {
         let inst = GetModuleHandleW(null());
@@ -136,7 +110,6 @@ pub fn install(on_event: impl Fn(Event) + 'static, state: impl Fn() -> MenuState
     }
 }
 
-#[cfg(windows)]
 pub fn remove() {
     let Some(t) = TRAY.with(|t| t.borrow_mut().take()) else { return };
     let nid = notify_data(t.hwnd, t.icon);
@@ -150,7 +123,6 @@ pub fn remove() {
 }
 
 /// Для второго запуска: попросить работающий экземпляр показать окно.
-#[cfg(windows)]
 pub fn wake_existing() -> bool {
     let class = wide(CLASS);
     unsafe {
@@ -165,7 +137,6 @@ pub fn wake_existing() -> bool {
     }
 }
 
-#[cfg(windows)]
 fn emit(e: Event) {
     let _ = slint::invoke_from_event_loop(move || {
         let f = TRAY.with(|t| t.borrow().as_ref().map(|t| t.on_event.clone()));
@@ -175,7 +146,6 @@ fn emit(e: Event) {
     });
 }
 
-#[cfg(windows)]
 fn show_menu(hwnd: HWND) {
     let Some(s) = TRAY.with(|t| t.borrow().as_ref().map(|t| (t.state)())) else { return };
     let tr = crate::i18n::tr;
@@ -227,7 +197,6 @@ fn show_menu(hwnd: HWND) {
     }
 }
 
-#[cfg(windows)]
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_TRAY => {
@@ -260,20 +229,4 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             DefWindowProcW(hwnd, msg, wp, lp)
         }
     }
-}
-
-// ---------- Linux: заглушки, управление без окна даёт MPRIS ----------
-
-#[cfg(not(target_os = "windows"))]
-#[allow(dead_code)]
-pub fn install(_on_event: impl Fn(Event) + 'static, _state: impl Fn() -> MenuState + 'static) {}
-
-#[cfg(not(target_os = "windows"))]
-#[allow(dead_code)]
-pub fn remove() {}
-
-#[cfg(not(target_os = "windows"))]
-#[allow(dead_code)]
-pub fn wake_existing() -> bool {
-    false
 }
